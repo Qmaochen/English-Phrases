@@ -5,7 +5,7 @@ import os
 import json
 import re
 import difflib
-from gtts import gTTS
+import gTTS
 from io import BytesIO
 import speech_recognition as sr
 
