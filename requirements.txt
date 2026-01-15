@@ -1,3 +1,2 @@
-speech_recognition
 streamlit
 edge-tts
