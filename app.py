@@ -11,12 +11,12 @@ from io import BytesIO
 import speech_recognition as sr
 from streamlit_mic_recorder import mic_recorder
 
-# --- Configuration ---
+# --- 設定區 ---
 DATA_FILENAME = 'phrases.xlsx'
 MISTAKE_FILENAME = 'mistakes.json'
-TEMP_AUDIO_FILE = "temp_voice.mp3" # Temporary file for iOS compatibility
+TEMP_AUDIO_FILE = "temp_voice.mp3" # 暫存檔名
 
-# --- 1. Basic Functions ---
+# --- 1. 基礎函式 ---
 
 @st.cache_data
 def load_data():
@@ -58,8 +58,8 @@ def save_mistakes(mistake_list):
             json.dump(mistake_list, f, ensure_ascii=False, indent=4)
     except: pass
 
-# --- Edge-TTS File Saving Mode (Fix for iOS) ---
-async def _edge_tts_save(text, voice="en-US-AriaNeural"):
+# --- Edge-TTS 存檔模式 ---
+async def _edge_tts_save(text, voice="en-US-GuyNeural"):
     try:
         clean_text = text.replace("_", " ")
         communicate = edge_tts.Communicate(clean_text, voice)
@@ -82,7 +82,7 @@ def get_audio_bytes(text):
         else:
             return None
     except Exception as e:
-        st.error(f"Audio generation failed: {e}")
+        st.error(f"語音生成失敗: {e}")
         return None
 
 def generate_diff(user_text, target_text):
@@ -114,7 +114,7 @@ def transcribe_audio_bytes(audio_bytes):
     except Exception as e:
         return str(e)
 
-# --- 2. State Initialization ---
+# --- 2. 狀態初始化 ---
 
 if 'initialized' not in st.session_state:
     data, syn_map, meanings = load_data()
@@ -128,12 +128,13 @@ if 'initialized' not in st.session_state:
     st.session_state.feedback = None
     st.session_state.audio_data = None
     st.session_state.q_audio_data = None
+    st.session_state.user_audio_bytes = None # [新功能] 存使用者的錄音
     st.session_state.options = [] 
     st.session_state.show_hint = False
     st.session_state.user_answer_key = "" 
     st.session_state.initialized = True
 
-# --- 3. Core Logic ---
+# --- 3. 核心邏輯 ---
 
 def pick_new_question():
     mistakes = st.session_state.mistakes
@@ -164,11 +165,11 @@ def pick_new_question():
     st.session_state.feedback = None
     st.session_state.audio_data = None
     st.session_state.q_audio_data = None
+    st.session_state.user_audio_bytes = None # [重置] 清空上一題的錄音
     st.session_state.show_hint = False 
     
     full_s = re.sub(r'_+', target_item['answer'], target_item['sentence'])
     
-    # Generate question audio
     if mode == 'listening' or mode == 'speaking':
         st.session_state.q_audio_data = get_audio_bytes(full_s)
     elif mode == 'choice':
@@ -193,12 +194,11 @@ def check_answer(user_input):
         if mode == 'choice': 
             is_correct = (user_clean == item['meaning'])
             target_ans = item['meaning']
-            # Choice mode is simple, return here
             if is_correct:
                 handle_correct(item, re.sub(r'_+', item['answer'], item['sentence']))
             else:
                 handle_wrong(item, target_ans, re.sub(r'_+', item['answer'], item['sentence']))
-            return # Exit function
+            return 
 
     elif mode == 'speaking':
         target_ans = re.sub(r'_+', item['answer'], item['sentence'])
@@ -210,15 +210,15 @@ def check_answer(user_input):
     is_correct = clean(user_clean) == clean(target_ans)
     
     if not is_correct:
-        # 1. Tense/Form Check (User typed phrase base form instead of answer)
+        # 1. Tense/Form Check
         if mode in ['sentence', 'listening', 'speaking']:
              phrase_base = item['phrase']
              if clean(user_clean) == clean(phrase_base) and clean(phrase_base) != clean(target_ans):
                 full_s = re.sub(r'_+', item['answer'], item['sentence'])
                 msg = f"""
-                ⚠️ **Correct word, wrong form/tense!** <br>
-                You typed: `{user_clean}` (Base form)<br>
-                Should be: **{target_ans}**
+                ⚠️ **用詞正確，但型態/時態不對喔！** <br>
+                你輸入: `{user_clean}` (原形)<br>
+                正確應為: **{target_ans}**
                 """
                 st.session_state.feedback = {"type": "warning", "msg": msg}
                 st.session_state.audio_data = get_audio_bytes(full_s)
@@ -230,7 +230,7 @@ def check_answer(user_input):
             current_meaning = item['meaning']
             if current_meaning in syn_map and user_clean.lower() in syn_map[current_meaning]:
                 full_s = re.sub(r'_+', item['answer'], item['sentence'])
-                msg = f"⚠️ **Correct meaning!** (You typed `{user_clean}`) But the answer here is **{target_ans}**"
+                msg = f"⚠️ **意思正確！** (你答 `{user_clean}`) 但這題指定答案是 **{target_ans}**"
                 st.session_state.feedback = {"type": "warning", "msg": msg}
                 st.session_state.audio_data = get_audio_bytes(full_s)
                 return
@@ -243,11 +243,11 @@ def check_answer(user_input):
         handle_wrong(item, target_ans, full_sentence_str, user_clean)
 
 def handle_correct(item, full_s):
-    msg = "✅ Correct! Great job!"
+    msg = "✅ Correct! 答對了！"
     if item['phrase'] in st.session_state.mistakes:
         st.session_state.mistakes.remove(item['phrase'])
         save_mistakes(st.session_state.mistakes)
-        msg += " (Removed from mistakes 🎉)"
+        msg += " (已移除錯題 🎉)"
     
     st.session_state.feedback = {"type": "success", "msg": msg}
     st.session_state.audio_data = get_audio_bytes(full_s)
@@ -256,11 +256,11 @@ def handle_wrong(item, target_text, full_s, user_input=""):
     diff_html = ""
     if user_input:
         diff_html = generate_diff(user_input, target_text)
-        diff_display = f"<br>Diff: {diff_html}"
+        diff_display = f"<br>差異比對: {diff_html}"
     else:
         diff_display = ""
 
-    msg = f"❌ Incorrect!<br>Answer: **{target_text}**{diff_display}<br>Sentence: *{full_s}*"
+    msg = f"❌ 答錯了！<br>正確答案: **{target_text}**{diff_display}<br>完整例句: *{full_s}*"
     
     if item['phrase'] not in st.session_state.mistakes:
         st.session_state.mistakes.append(item['phrase'])
@@ -272,29 +272,29 @@ def handle_wrong(item, target_text, full_s, user_input=""):
 def toggle_hint():
     st.session_state.show_hint = True
 
-# --- 4. Interface Layout ---
+# --- 4. 介面佈局 ---
 
-st.set_page_config(page_title="Ultimate English Training", page_icon="🧠")
+st.set_page_config(page_title="究極英文特訓", page_icon="🧠")
 
 with st.sidebar:
-    st.header("📊 Dashboard")
-    st.metric("💀 Mistakes", f"{len(st.session_state.mistakes)} words")
-    with st.expander("🗑️ Manage Mistakes"):
+    st.header("📊 學習控制台")
+    st.metric("💀 錯題本", f"{len(st.session_state.mistakes)} 題")
+    with st.expander("🗑️ 管理錯題"):
         if st.session_state.mistakes:
-            to_remove = st.multiselect("Remove mastered:", st.session_state.mistakes)
-            if st.button("Confirm Delete"):
+            to_remove = st.multiselect("移除已學會:", st.session_state.mistakes)
+            if st.button("確認刪除"):
                 for w in to_remove:
                     if w in st.session_state.mistakes: st.session_state.mistakes.remove(w)
                 save_mistakes(st.session_state.mistakes)
                 st.rerun()
-        else: st.write("No mistakes yet! Keep it up!")
+        else: st.write("錯題本是空的！")
     st.divider()
-    if st.button("🔄 Reload DB"):
+    if st.button("🔄 重新載入"):
         st.cache_data.clear()
         st.session_state.initialized = False
         st.rerun()
 
-st.title("🧠 Ultimate English Training (Edge-TTS Ver.)")
+st.title("🧠 究極英文特訓 (Edge-TTS Ver.)")
 
 if st.session_state.current_q is None:
     pick_new_question()
@@ -302,60 +302,60 @@ if st.session_state.current_q is None:
 q = st.session_state.current_q
 mode = st.session_state.mode
 
-if st.session_state.is_review: st.warning("💀 Reviewing Mistakes...")
+if st.session_state.is_review: st.warning("💀 錯題複習中...")
 
 col1, col2 = st.columns([1, 4])
 with col1:
-    if mode == 'phrase': st.info("📝 Phrase")
-    elif mode == 'sentence': st.success("🗣️ Sentence")
-    elif mode == 'listening': st.warning("👂 Listening")
-    elif mode == 'choice': st.error("⚡ Choice")
-    elif mode == 'speaking': st.error("🎙️ Speaking")
+    if mode == 'phrase': st.info("📝 考片語")
+    elif mode == 'sentence': st.success("🗣️ 考例句")
+    elif mode == 'listening': st.warning("👂 聽寫")
+    elif mode == 'choice': st.error("⚡ 聽音選義")
+    elif mode == 'speaking': st.error("🎙️ 口說特訓")
 
-# --- Question Display Area ---
+# --- 題目顯示區 ---
 with col2:
     if mode == 'choice':
-        st.subheader("Listen and choose the meaning:")
+        st.subheader("請聽發音，選出正確意思：")
         if st.session_state.q_audio_data:
             st.audio(st.session_state.q_audio_data, format='audio/mpeg')
         else:
-            st.warning("⚠️ Audio failed")
+            st.warning("⚠️ 音檔生成失敗")
             
     elif mode == 'listening':
-        st.subheader("Listen and fill in the blank:")
+        st.subheader("請聽完整句子，填入空格：")
         if st.session_state.q_audio_data:
             st.audio(st.session_state.q_audio_data, format='audio/mpeg')
         else:
-            st.warning("⚠️ Audio failed")
+            st.warning("⚠️ 音檔生成失敗")
         clean_s = re.sub(r'_+', ' ______ ', q['sentence'])
         st.markdown(f"**{clean_s}**")
         
     elif mode == 'speaking':
         full_display = re.sub(r'_+', q['answer'], q['sentence'])
-        st.subheader("Read aloud:")
+        st.subheader("請大聲唸出以下句子：")
         st.markdown(f"### 🗣️ {full_display}")
-        st.info("Use the record button below.")
+        st.info("請使用下方錄音按鈕進行作答。")
         
-    else: # Phrase / Sentence Mode
-        st.subheader(f"Meaning: {q['meaning']}")
+    else: 
+        st.subheader(f"中文: {q['meaning']}")
         if mode == 'sentence':
             clean_s = re.sub(r'_+', ' ______ ', q['sentence'])
             st.markdown(f"#### {clean_s}")
 
-# --- Hint Area ---
+# --- 提示區 ---
 if mode not in ['choice', 'speaking'] and not st.session_state.feedback:
     target = q['phrase'] if mode == 'phrase' else q['answer']
-    hint_text = f"First letter: **{target[0]}...** (Length: {len(target)})"
-    if st.session_state.show_hint: st.info(f"💡 Hint: {hint_text}")
-    else: st.button("💡 Hint (Scaffolding)", on_click=toggle_hint)
+    hint_text = f"首字母: **{target[0]}...** (總長度: {len(target)})"
+    if st.session_state.show_hint: st.info(f"💡 提示: {hint_text}")
+    else: st.button("💡 給我一點提示 (Scaffolding)", on_click=toggle_hint)
 
 st.divider()
 
-# --- Answer Area ---
+# --- 作答區 ---
 has_answered = st.session_state.feedback is not None
 
 if mode == 'choice':
-    st.write("Choose one:")
+    st.write("請選擇:")
     cols = st.columns(2)
     for i, opt in enumerate(st.session_state.options):
         cols[i%2].button(
@@ -370,54 +370,54 @@ elif mode == 'speaking':
     if not has_answered:
         col_rec, col_msg = st.columns([1, 3])
         with col_rec:
-            # Frontend recorder
             audio_blob = mic_recorder(
-                start_prompt="🎙️ Start", 
-                stop_prompt="⏹️ Stop & Send", 
+                start_prompt="🎙️ 開始錄音", 
+                stop_prompt="⏹️ 停止並送出", 
                 key='my_recorder',
                 format="wav"
             )
         
         with col_msg:
             if audio_blob:
-                st.write("🔄 Recognizing...")
+                # [新功能] 1. 儲存使用者錄音供稍後回放
+                st.session_state.user_audio_bytes = audio_blob['bytes']
+
+                st.write("🔄 正在辨識...")
                 audio_bytes = audio_blob['bytes']
                 text_result = transcribe_audio_bytes(audio_bytes)
                 
                 if text_result == "Not Recognized":
-                    st.warning("😓 Not recognized")
+                    st.warning("😓 聽不太清楚")
                 elif text_result == "API Error":
-                    st.error("⚠️ API Error")
+                    st.error("⚠️ 語音服務連線錯誤")
                 else:
-                    st.success(f"👂 Heard: **{text_result}**")
+                    st.success(f"👂 系統聽到： **{text_result}**")
                     check_answer(text_result)
                     st.rerun()
 
-        # Skip button
         st.markdown("")
-        if st.button("😶 Skip this question"):
+        if st.button("😶 現在不方便說，跳過這題"):
             pick_new_question() 
             st.rerun()          
     else:
-        st.info("🎤 Recording finished.")
+        st.info("🎤 錄音結束，請查看下方回饋並按下一題。")
 
 else:
-    # --- [Correction] Use st.form for stable submission on iPad/Mobile ---
     with st.form(key='answer_form', clear_on_submit=True):
         user_input_val = st.text_input(
-            "Enter answer:", 
+            "請輸入答案 (按 Enter 送出):", 
             key="user_input_form",
             disabled=has_answered 
         )
         submitted = st.form_submit_button(
-            "Submit Answer", 
+            "送出答案", 
             disabled=has_answered
         )
 
     if submitted:
         check_answer(user_input_val)
 
-# --- Feedback Area ---
+# --- 回饋區 ---
 if st.session_state.feedback:
     fb = st.session_state.feedback
     
@@ -425,12 +425,17 @@ if st.session_state.feedback:
     elif fb['type'] == 'warning': st.warning(fb['msg'], icon="⚠️")
     else: 
         st.markdown(fb['msg'], unsafe_allow_html=True)
-        st.error("Keep trying!")
+        st.error("加油！再試一次！")
     
+    # 顯示標準發音 (Edge-TTS)
     if st.session_state.audio_data:
-        st.write("🔊 Audio (Edge-TTS):")
-        # iPad supported format, no autoplay
+        st.write("🔊 標準發音 (Edge-TTS)：")
         st.audio(st.session_state.audio_data, format='audio/mpeg', start_time=0)
 
+    # [新功能] 顯示使用者剛剛的錄音 (如果有)
+    if st.session_state.user_audio_bytes:
+        st.write("🎤 你的錄音回放：")
+        st.audio(st.session_state.user_audio_bytes, format='audio/wav')
+
     st.markdown("---")
-    st.button("👉 Next Question", on_click=pick_new_question, type="primary", key="btn_next")
+    st.button("👉 下一題 (Next)", on_click=pick_new_question, type="primary", key="btn_next")
