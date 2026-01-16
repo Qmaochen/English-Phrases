@@ -128,7 +128,7 @@ if 'initialized' not in st.session_state:
     st.session_state.feedback = None
     st.session_state.audio_data = None
     st.session_state.q_audio_data = None
-    st.session_state.user_audio_bytes = None # [新功能] 存使用者的錄音
+    st.session_state.user_audio_bytes = None # 存使用者的錄音
     st.session_state.options = [] 
     st.session_state.show_hint = False
     st.session_state.user_answer_key = "" 
@@ -165,7 +165,7 @@ def pick_new_question():
     st.session_state.feedback = None
     st.session_state.audio_data = None
     st.session_state.q_audio_data = None
-    st.session_state.user_audio_bytes = None # [重置] 清空上一題的錄音
+    st.session_state.user_audio_bytes = None # 清空上一題的錄音
     st.session_state.show_hint = False 
     
     full_s = re.sub(r'_+', target_item['answer'], target_item['sentence'])
@@ -181,6 +181,9 @@ def pick_new_question():
         st.session_state.options = opts
 
 def check_answer(user_input):
+    # [防呆] 如果已經有回饋(已作答)，禁止再次執行檢查
+    if st.session_state.feedback is not None: return
+
     item = st.session_state.current_q
     mode = st.session_state.mode
     
@@ -352,6 +355,7 @@ if mode not in ['choice', 'speaking'] and not st.session_state.feedback:
 st.divider()
 
 # --- 作答區 ---
+# 核心邏輯：如果有 feedback，代表已作答 (has_answered = True)，則鎖住輸入
 has_answered = st.session_state.feedback is not None
 
 if mode == 'choice':
@@ -363,7 +367,7 @@ if mode == 'choice':
             use_container_width=True, 
             on_click=check_answer, 
             args=(opt,),
-            disabled=has_answered 
+            disabled=has_answered # [鎖定] 選擇題按鈕
         )
 
 elif mode == 'speaking':
@@ -379,9 +383,7 @@ elif mode == 'speaking':
         
         with col_msg:
             if audio_blob:
-                # [新功能] 1. 儲存使用者錄音供稍後回放
-                st.session_state.user_audio_bytes = audio_blob['bytes']
-
+                st.session_state.user_audio_bytes = audio_blob['bytes'] # 存錄音
                 st.write("🔄 正在辨識...")
                 audio_bytes = audio_blob['bytes']
                 text_result = transcribe_audio_bytes(audio_bytes)
@@ -403,15 +405,16 @@ elif mode == 'speaking':
         st.info("🎤 錄音結束，請查看下方回饋並按下一題。")
 
 else:
+    # 文字輸入區：用 Form 確保送出穩定 + 鎖定輸入框
     with st.form(key='answer_form', clear_on_submit=True):
         user_input_val = st.text_input(
             "請輸入答案 (按 Enter 送出):", 
             key="user_input_form",
-            disabled=has_answered 
+            disabled=has_answered # [鎖定] 輸入框
         )
         submitted = st.form_submit_button(
             "送出答案", 
-            disabled=has_answered
+            disabled=has_answered # [鎖定] 送出按鈕
         )
 
     if submitted:
@@ -432,7 +435,7 @@ if st.session_state.feedback:
         st.write("🔊 標準發音 (Edge-TTS)：")
         st.audio(st.session_state.audio_data, format='audio/mpeg', start_time=0)
 
-    # [新功能] 顯示使用者剛剛的錄音 (如果有)
+    # 顯示使用者剛剛的錄音 (如果有)
     if st.session_state.user_audio_bytes:
         st.write("🎤 你的錄音回放：")
         st.audio(st.session_state.user_audio_bytes, format='audio/wav')
