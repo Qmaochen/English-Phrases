@@ -58,11 +58,8 @@ def save_mistakes(mistake_list):
             json.dump(mistake_list, f, ensure_ascii=False, indent=4)
     except: pass
 
-# --- [關鍵修改] 改為存檔模式以支援 iOS ---
-async def _edge_tts_save(text, voice="en-US-AriaNeural"):
-    """
-    將語音直接存檔，解決 iOS 無法播放記憶體串流的問題
-    """
+# --- Edge-TTS 存檔模式 ---
+async def _edge_tts_save(text, voice="en-US-GuyNeural"):
     try:
         clean_text = text.replace("_", " ")
         communicate = edge_tts.Communicate(clean_text, voice)
@@ -73,16 +70,11 @@ async def _edge_tts_save(text, voice="en-US-AriaNeural"):
         return False
 
 def get_audio_bytes(text):
-    """
-    生成檔案 -> 讀取 Bytes -> 回傳
-    """
     try:
-        # 1. 執行 Async 任務存檔
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         success = loop.run_until_complete(_edge_tts_save(text))
         
-        # 2. 如果成功，讀取檔案變成 Bytes
         if success and os.path.exists(TEMP_AUDIO_FILE):
             with open(TEMP_AUDIO_FILE, "rb") as f:
                 audio_bytes = f.read()
@@ -176,7 +168,6 @@ def pick_new_question():
     
     full_s = re.sub(r'_+', target_item['answer'], target_item['sentence'])
     
-    # 生成題目音檔
     if mode == 'listening' or mode == 'speaking':
         st.session_state.q_audio_data = get_audio_bytes(full_s)
     elif mode == 'choice':
@@ -299,11 +290,11 @@ with col1:
     elif mode == 'choice': st.error("⚡ 聽音選義")
     elif mode == 'speaking': st.error("🎙️ 口說特訓")
 
+# --- 題目顯示區 (只負責顯示) ---
 with col2:
     if mode == 'choice':
         st.subheader("請聽發音，選出正確意思：")
         if st.session_state.q_audio_data:
-            # [修正] iPad 支援格式
             st.audio(st.session_state.q_audio_data, format='audio/mpeg')
         else:
             st.warning("⚠️ 音檔生成失敗")
@@ -311,7 +302,6 @@ with col2:
     elif mode == 'listening':
         st.subheader("請聽完整句子，填入空格：")
         if st.session_state.q_audio_data:
-             # [修正] iPad 支援格式
             st.audio(st.session_state.q_audio_data, format='audio/mpeg')
         else:
             st.warning("⚠️ 音檔生成失敗")
@@ -319,45 +309,17 @@ with col2:
         st.markdown(f"**{clean_s}**")
         
     elif mode == 'speaking':
-        if not has_answered:
-            col_rec, col_msg = st.columns([1, 3])
-            with col_rec:
-                # 錄音按鈕
-                audio_blob = mic_recorder(
-                    start_prompt="🎙️ 開始錄音", 
-                    stop_prompt="⏹️ 停止並送出", 
-                    key='my_recorder',
-                    format="wav"
-                )
-            
-            with col_msg:
-                if audio_blob:
-                    st.write("🔄 正在辨識...")
-                    audio_bytes = audio_blob['bytes']
-                    text_result = transcribe_audio_bytes(audio_bytes)
-                    
-                    if text_result == "Not Recognized":
-                        st.warning("😓 聽不太清楚")
-                    elif text_result == "API Error":
-                        st.error("⚠️ 語音服務連線錯誤")
-                    else:
-                        st.success(f"👂 系統聽到： **{text_result}**")
-                        check_answer(text_result)
-                        st.rerun()
-    
-            # [新增功能] 跳過按鈕 (只有在還沒回答時顯示)
-            st.markdown("") # 加一點留白
-            if st.button("😶 現在不方便說，跳過這題"):
-                pick_new_question() # 抽選下一題
-                st.rerun()          # 強制刷新頁面
-                
-        else:
-            st.info("🎤 錄音結束，請查看下方回饋並按下一題。")
-        else:
-            st.subheader(f"中文: {q['meaning']}")
-            if mode == 'sentence':
-                clean_s = re.sub(r'_+', ' ______ ', q['sentence'])
-                st.markdown(f"#### {clean_s}")
+        # 這裡只顯示題目文字，錄音按鈕在下面的作答區
+        full_display = re.sub(r'_+', q['answer'], q['sentence'])
+        st.subheader("請大聲唸出以下句子：")
+        st.markdown(f"### 🗣️ {full_display}")
+        st.info("請使用下方錄音按鈕進行作答。")
+        
+    else: # Phrase / Sentence Mode
+        st.subheader(f"中文: {q['meaning']}")
+        if mode == 'sentence':
+            clean_s = re.sub(r'_+', ' ______ ', q['sentence'])
+            st.markdown(f"#### {clean_s}")
 
 # --- 提示區 ---
 if mode not in ['choice', 'speaking'] and not st.session_state.feedback:
@@ -368,7 +330,7 @@ if mode not in ['choice', 'speaking'] and not st.session_state.feedback:
 
 st.divider()
 
-# --- 作答區 ---
+# --- 作答區 (負責輸入與按鈕) ---
 has_answered = st.session_state.feedback is not None
 
 if mode == 'choice':
@@ -387,6 +349,7 @@ elif mode == 'speaking':
     if not has_answered:
         col_rec, col_msg = st.columns([1, 3])
         with col_rec:
+            # 前端錄音組件
             audio_blob = mic_recorder(
                 start_prompt="🎙️ 開始錄音", 
                 stop_prompt="⏹️ 停止並送出", 
@@ -408,10 +371,17 @@ elif mode == 'speaking':
                     st.success(f"👂 系統聽到： **{text_result}**")
                     check_answer(text_result)
                     st.rerun()
+
+        # 跳過按鈕
+        st.markdown("")
+        if st.button("😶 現在不方便說，跳過這題"):
+            pick_new_question() 
+            st.rerun()          
     else:
         st.info("🎤 錄音結束，請查看下方回饋並按下一題。")
 
 else:
+    # 文字輸入框
     st.text_input(
         "請輸入答案 (按 Enter 送出):", 
         key="user_answer_key", 
@@ -432,7 +402,7 @@ if st.session_state.feedback:
     
     if st.session_state.audio_data:
         st.write("🔊 標準發音 (Edge-TTS)：")
-        # [修正] iPad 支援格式，不自動播放
+        # iPad 支援格式，不自動播放
         st.audio(st.session_state.audio_data, format='audio/mpeg', start_time=0)
 
     st.markdown("---")
