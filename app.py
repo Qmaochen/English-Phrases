@@ -14,6 +14,7 @@ from streamlit_mic_recorder import mic_recorder
 # --- 設定區 ---
 DATA_FILENAME = 'phrases.xlsx'
 MISTAKE_FILENAME = 'mistakes.json'
+TEMP_AUDIO_FILE = "temp_voice.mp3" # 暫存檔名
 
 # --- 1. 基礎函式 ---
 
@@ -57,29 +58,37 @@ def save_mistakes(mistake_list):
             json.dump(mistake_list, f, ensure_ascii=False, indent=4)
     except: pass
 
-# --- Edge-TTS 語音生成 ---
-async def _edge_tts_generate(text, voice="en-US-AriaNeural"):
+# --- [關鍵修改] 改為存檔模式以支援 iOS ---
+async def _edge_tts_save(text, voice="en-US-AriaNeural"):
+    """
+    將語音直接存檔，解決 iOS 無法播放記憶體串流的問題
+    """
     try:
         clean_text = text.replace("_", " ")
         communicate = edge_tts.Communicate(clean_text, voice)
-        out = BytesIO()
-        async for chunk in communicate.stream():
-            if chunk["type"] == "audio":
-                out.write(chunk["data"])
-        out.seek(0)
-        return out
+        await communicate.save(TEMP_AUDIO_FILE)
+        return True
     except Exception as e:
-        print(f"EdgeTTS Async Error: {e}")
-        return None
+        print(f"EdgeTTS Error: {e}")
+        return False
 
 def get_audio_bytes(text):
     """
-    產生語音檔 (包含錯誤處理與迴圈管理)
+    生成檔案 -> 讀取 Bytes -> 回傳
     """
     try:
+        # 1. 執行 Async 任務存檔
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        return loop.run_until_complete(_edge_tts_generate(text))
+        success = loop.run_until_complete(_edge_tts_save(text))
+        
+        # 2. 如果成功，讀取檔案變成 Bytes
+        if success and os.path.exists(TEMP_AUDIO_FILE):
+            with open(TEMP_AUDIO_FILE, "rb") as f:
+                audio_bytes = f.read()
+            return audio_bytes
+        else:
+            return None
     except Exception as e:
         st.error(f"語音生成失敗: {e}")
         return None
@@ -167,7 +176,7 @@ def pick_new_question():
     
     full_s = re.sub(r'_+', target_item['answer'], target_item['sentence'])
     
-    # 預先生成題目音檔
+    # 生成題目音檔
     if mode == 'listening' or mode == 'speaking':
         st.session_state.q_audio_data = get_audio_bytes(full_s)
     elif mode == 'choice':
@@ -294,14 +303,16 @@ with col2:
     if mode == 'choice':
         st.subheader("請聽發音，選出正確意思：")
         if st.session_state.q_audio_data:
-            st.audio(st.session_state.q_audio_data, format='audio/mp3', autoplay=False)
+            # [修正] iPad 支援格式
+            st.audio(st.session_state.q_audio_data, format='audio/mpeg')
         else:
             st.warning("⚠️ 音檔生成失敗")
             
     elif mode == 'listening':
         st.subheader("請聽完整句子，填入空格：")
         if st.session_state.q_audio_data:
-            st.audio(st.session_state.q_audio_data, format='audio/mp3', autoplay=False)
+             # [修正] iPad 支援格式
+            st.audio(st.session_state.q_audio_data, format='audio/mpeg')
         else:
             st.warning("⚠️ 音檔生成失敗")
         clean_s = re.sub(r'_+', ' ______ ', q['sentence'])
@@ -346,7 +357,6 @@ elif mode == 'speaking':
     if not has_answered:
         col_rec, col_msg = st.columns([1, 3])
         with col_rec:
-            # 錄音
             audio_blob = mic_recorder(
                 start_prompt="🎙️ 開始錄音", 
                 stop_prompt="⏹️ 停止並送出", 
@@ -392,9 +402,8 @@ if st.session_state.feedback:
     
     if st.session_state.audio_data:
         st.write("🔊 標準發音 (Edge-TTS)：")
-        # 加上 autoplay=True 嘗試自動播放
-        st.audio(st.session_state.audio_data, format='audio/mp3', start_time=0, autoplay=True)
+        # [修正] iPad 支援格式，不自動播放
+        st.audio(st.session_state.audio_data, format='audio/mpeg', start_time=0)
 
     st.markdown("---")
-    # [Fix] 加上 key 避免 DuplicateElementId 錯誤
     st.button("👉 下一題 (Next)", on_click=pick_new_question, type="primary", key="btn_next")
