@@ -319,15 +319,45 @@ with col2:
         st.markdown(f"**{clean_s}**")
         
     elif mode == 'speaking':
-        full_display = re.sub(r'_+', q['answer'], q['sentence'])
-        st.subheader("請大聲唸出以下句子：")
-        st.markdown(f"### 🗣️ {full_display}")
-        st.info("請點擊下方按鈕進行錄音。")
-    else:
-        st.subheader(f"中文: {q['meaning']}")
-        if mode == 'sentence':
-            clean_s = re.sub(r'_+', ' ______ ', q['sentence'])
-            st.markdown(f"#### {clean_s}")
+        if not has_answered:
+            col_rec, col_msg = st.columns([1, 3])
+            with col_rec:
+                # 錄音按鈕
+                audio_blob = mic_recorder(
+                    start_prompt="🎙️ 開始錄音", 
+                    stop_prompt="⏹️ 停止並送出", 
+                    key='my_recorder',
+                    format="wav"
+                )
+            
+            with col_msg:
+                if audio_blob:
+                    st.write("🔄 正在辨識...")
+                    audio_bytes = audio_blob['bytes']
+                    text_result = transcribe_audio_bytes(audio_bytes)
+                    
+                    if text_result == "Not Recognized":
+                        st.warning("😓 聽不太清楚")
+                    elif text_result == "API Error":
+                        st.error("⚠️ 語音服務連線錯誤")
+                    else:
+                        st.success(f"👂 系統聽到： **{text_result}**")
+                        check_answer(text_result)
+                        st.rerun()
+    
+            # [新增功能] 跳過按鈕 (只有在還沒回答時顯示)
+            st.markdown("") # 加一點留白
+            if st.button("😶 現在不方便說，跳過這題"):
+                pick_new_question() # 抽選下一題
+                st.rerun()          # 強制刷新頁面
+                
+        else:
+            st.info("🎤 錄音結束，請查看下方回饋並按下一題。")
+        else:
+            st.subheader(f"中文: {q['meaning']}")
+            if mode == 'sentence':
+                clean_s = re.sub(r'_+', ' ______ ', q['sentence'])
+                st.markdown(f"#### {clean_s}")
 
 # --- 提示區 ---
 if mode not in ['choice', 'speaking'] and not st.session_state.feedback:
