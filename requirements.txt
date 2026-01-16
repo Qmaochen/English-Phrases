@@ -1,5 +1,7 @@
 streamlit
 pandas
 openpyxl
+gTTS
 edge-tts
 SpeechRecognition
+streamlit-mic-recorder
