@@ -5,16 +5,15 @@ import os
 import json
 import re
 import difflib
-import asyncio 
-import edge_tts 
+import asyncio  # 用於執行非同步的 edge-tts
+import edge_tts # 新增：微軟高品質語音
 from io import BytesIO
 import speech_recognition as sr
+from streamlit_mic_recorder import mic_recorder # 新增：前端錄音套件
 
 # --- 設定區 ---
 DATA_FILENAME = 'phrases.xlsx'
 MISTAKE_FILENAME = 'mistakes.json'
-# 設定 Edge-TTS 的聲音 (美式男聲)
-VOICE_NAME = "en-US-GuyNeural" 
 
 # --- 1. 基礎函式 ---
 
@@ -22,8 +21,7 @@ VOICE_NAME = "en-US-GuyNeural"
 def load_data():
     if not os.path.exists(DATA_FILENAME): return [], {}, []
     try:
-        # 確保 openpyxl 已安裝，否則讀取 Excel 會失敗
-        df = pd.read_excel(DATA_FILENAME, engine='openpyxl').fillna("")
+        df = pd.read_excel(DATA_FILENAME).fillna("")
         data_list = df.to_dict('records')
         valid_data = []
         synonym_map = {} 
@@ -45,9 +43,7 @@ def load_data():
                 if a.lower() not in synonym_map[m]: synonym_map[m].append(a.lower())
 
         return valid_data, synonym_map, all_meanings
-    except Exception as e:
-        st.error(f"讀取 Excel 失敗: {e}")
-        return [], {}, []
+    except: return [], {}, []
 
 def load_mistakes():
     if not os.path.exists(MISTAKE_FILENAME): return []
@@ -61,25 +57,35 @@ def save_mistakes(mistake_list):
             json.dump(mistake_list, f, ensure_ascii=False, indent=4)
     except: pass
 
-# --- 修改核心：改用 Edge-TTS ---
-async def _generate_edge_audio(text, voice):
-    communicate = edge_tts.Communicate(text, voice)
-    fp = BytesIO()
+# --- [修改] 使用 Edge-TTS 生成語音 ---
+async def _edge_tts_generate(text, voice="en-US-GuyNeural"):
+    """
+    Edge TTS 是非同步的，需要用 async 函式處理
+    voice 推薦: 
+    - en-US-AriaNeural (女聲, 預設)
+    - en-US-GuyNeural (男聲)
+    - en-US-AnaNeural (小孩聲)
+    """
+    clean_text = text.replace("_", " ") # 把底線換成空白
+    communicate = edge_tts.Communicate(clean_text, voice)
+    
+    # 將音檔寫入記憶體 BytesIO
+    out = BytesIO()
     async for chunk in communicate.stream():
         if chunk["type"] == "audio":
-            fp.write(chunk["data"])
-    fp.seek(0)
-    return fp
+            out.write(chunk["data"])
+    out.seek(0)
+    return out
 
 def get_audio_bytes(text):
     """
-    使用 Edge-TTS 生成語音
+    包裝 async 函式給 Streamlit 同步呼叫
     """
     try:
-        clean_text = text.replace("_", " ") # 把填空的底線換成空格，避免唸出 "underscore"
-        # 透過 asyncio.run 執行非同步函式
-        audio_fp = asyncio.run(_generate_edge_audio(clean_text, VOICE_NAME))
-        return audio_fp
+        # 建立新的事件迴圈來執行 async
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(_edge_tts_generate(text))
     except Exception as e:
         print(f"TTS Error: {e}")
         return None
@@ -99,13 +105,13 @@ def generate_diff(user_text, target_text):
             html.append(f"<span style='color:red; background-color:#ffe6e6'>[{target_text[b0:b1]}]</span>")
     return "".join(html)
 
-def transcribe_audio(audio_bytes):
+def transcribe_audio_bytes(audio_bytes):
+    """將 Bytes 資料轉成文字"""
     r = sr.Recognizer()
     try:
-        # 這裡直接讀取 Streamlit 傳回的 BytesIO
-        with sr.AudioFile(audio_bytes) as source:
+        # mic_recorder 回傳的是 wav 格式的 bytes，可以直接讀取
+        with sr.AudioFile(BytesIO(audio_bytes)) as source:
             audio_data = r.record(source)
-            # 使用 Google Web Speech API (免費，準確率尚可)
             text = r.recognize_google(audio_data, language='en-US')
             return text
     except sr.UnknownValueError:
@@ -140,9 +146,7 @@ def pick_new_question():
     mistakes = st.session_state.mistakes
     all_phrases = st.session_state.all_phrases
     
-    if not all_phrases: 
-        st.error("找不到題目資料 (phrases.xlsx)，請確認檔案存在。")
-        return
+    if not all_phrases: return
 
     target_item = None
     is_review = False
@@ -171,7 +175,6 @@ def pick_new_question():
     
     full_s = re.sub(r'_+', target_item['answer'], target_item['sentence'])
     
-    # 預先生成題目語音
     if mode == 'listening' or mode == 'speaking':
         st.session_state.q_audio_data = get_audio_bytes(full_s)
     elif mode == 'choice':
@@ -276,7 +279,7 @@ with st.sidebar:
         st.session_state.initialized = False
         st.rerun()
 
-st.title("🧠 究極英文特訓")
+st.title("🧠 究極英文特訓 (Edge-TTS Ver.)")
 
 if st.session_state.current_q is None:
     pick_new_question()
@@ -297,19 +300,17 @@ with col1:
 with col2:
     if mode == 'choice':
         st.subheader("請聽發音，選出正確意思：")
-        if st.session_state.q_audio_data:
-            st.audio(st.session_state.q_audio_data, format='audio/mp3')
+        st.audio(st.session_state.q_audio_data, format='audio/mp3')
     elif mode == 'listening':
         st.subheader("請聽完整句子，填入空格：")
-        if st.session_state.q_audio_data:
-            st.audio(st.session_state.q_audio_data, format='audio/mp3')
+        st.audio(st.session_state.q_audio_data, format='audio/mp3')
         clean_s = re.sub(r'_+', ' ______ ', q['sentence'])
         st.markdown(f"**{clean_s}**")
     elif mode == 'speaking':
         full_display = re.sub(r'_+', q['answer'], q['sentence'])
         st.subheader("請大聲唸出以下句子：")
         st.markdown(f"### 🗣️ {full_display}")
-        st.info("點擊下方紅色按鈕錄音，唸完後系統會自動辨識。")
+        st.info("請點擊下方按鈕進行錄音。")
     else:
         st.subheader(f"中文: {q['meaning']}")
         if mode == 'sentence':
@@ -341,23 +342,35 @@ if mode == 'choice':
         )
 
 elif mode == 'speaking':
+    # [修改] 改用 streamlit_mic_recorder
+    # 這是一個純前端的錄音組件
     if not has_answered:
-        # 使用 Streamlit 內建錄音元件，解決瀏覽器麥克風權限問題
-        audio_val = st.audio_input("🔴 按下紅色按鈕開始錄音")
+        col_rec, col_msg = st.columns([1, 3])
+        with col_rec:
+            # key='my_recorder' 會自動存入 session_state
+            # 錄音完畢後，audio_blob 會包含 'bytes' 數據
+            audio_blob = mic_recorder(
+                start_prompt="🎙️ 開始錄音", 
+                stop_prompt="⏹️ 停止並送出", 
+                key='my_recorder',
+                format="wav"
+            )
         
-        if audio_val:
-            st.write("🔄 正在辨識您的發音...")
-            text_result = transcribe_audio(audio_val)
-            
-            if text_result == "Not Recognized":
-                st.warning("😓 聽不太清楚，請再試一次！")
-            elif text_result == "API Error":
-                st.error("⚠️ 語音服務連線錯誤")
-            else:
-                st.success(f"👂 系統聽到： **{text_result}**")
-                # 這裡直接呼叫 check_answer 並重新執行，讓介面更新
-                check_answer(text_result)
-                st.rerun()
+        with col_msg:
+            if audio_blob:
+                st.write("🔄 正在辨識...")
+                # 取得二進位資料
+                audio_bytes = audio_blob['bytes']
+                text_result = transcribe_audio_bytes(audio_bytes)
+                
+                if text_result == "Not Recognized":
+                    st.warning("😓 聽不太清楚")
+                elif text_result == "API Error":
+                    st.error("⚠️ 語音服務連線錯誤")
+                else:
+                    st.success(f"👂 系統聽到： **{text_result}**")
+                    check_answer(text_result)
+                    st.rerun()
     else:
         st.info("🎤 錄音結束，請查看下方回饋並按下一題。")
 
@@ -366,7 +379,7 @@ else:
         "請輸入答案 (按 Enter 送出):", 
         key="user_answer_key", 
         on_change=submit_answer,
-        disabled=has_answered
+        disabled=has_answered 
     )
     st.button("送出答案", on_click=submit_answer, disabled=has_answered)
 
@@ -381,8 +394,10 @@ if st.session_state.feedback:
         st.error("加油！再試一次！")
     
     if st.session_state.audio_data:
-        st.write("🔊 聽聽看標準發音 (美式男聲)：")
+        st.write("🔊 標準發音 (Edge-TTS)：")
         st.audio(st.session_state.audio_data, format='audio/mp3', start_time=0)
 
+    st.markdown("---")
+    st.button("👉 下一題 (Next)", on_click=pick_new_question, type="primary")
     st.markdown("---")
     st.button("👉 下一題 (Next)", on_click=pick_new_question, type="primary")
