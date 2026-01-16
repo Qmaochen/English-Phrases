@@ -5,11 +5,11 @@ import os
 import json
 import re
 import difflib
-import asyncio  # 用於執行非同步的 edge-tts
-import edge_tts # 新增：微軟高品質語音
+import asyncio
+import edge_tts
 from io import BytesIO
 import speech_recognition as sr
-from streamlit_mic_recorder import mic_recorder # 新增：前端錄音套件
+from streamlit_mic_recorder import mic_recorder
 
 # --- 設定區 ---
 DATA_FILENAME = 'phrases.xlsx'
@@ -57,37 +57,31 @@ def save_mistakes(mistake_list):
             json.dump(mistake_list, f, ensure_ascii=False, indent=4)
     except: pass
 
-# --- [修改] 使用 Edge-TTS 生成語音 ---
-async def _edge_tts_generate(text, voice="en-US-GuyNeural"):
-    """
-    Edge TTS 是非同步的，需要用 async 函式處理
-    voice 推薦: 
-    - en-US-AriaNeural (女聲, 預設)
-    - en-US-GuyNeural (男聲)
-    - en-US-AnaNeural (小孩聲)
-    """
-    clean_text = text.replace("_", " ") # 把底線換成空白
-    communicate = edge_tts.Communicate(clean_text, voice)
-    
-    # 將音檔寫入記憶體 BytesIO
-    out = BytesIO()
-    async for chunk in communicate.stream():
-        if chunk["type"] == "audio":
-            out.write(chunk["data"])
-    out.seek(0)
-    return out
+# --- Edge-TTS 語音生成 ---
+async def _edge_tts_generate(text, voice="en-US-AriaNeural"):
+    try:
+        clean_text = text.replace("_", " ")
+        communicate = edge_tts.Communicate(clean_text, voice)
+        out = BytesIO()
+        async for chunk in communicate.stream():
+            if chunk["type"] == "audio":
+                out.write(chunk["data"])
+        out.seek(0)
+        return out
+    except Exception as e:
+        print(f"EdgeTTS Async Error: {e}")
+        return None
 
 def get_audio_bytes(text):
     """
-    包裝 async 函式給 Streamlit 同步呼叫
+    產生語音檔 (包含錯誤處理與迴圈管理)
     """
     try:
-        # 建立新的事件迴圈來執行 async
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         return loop.run_until_complete(_edge_tts_generate(text))
     except Exception as e:
-        print(f"TTS Error: {e}")
+        st.error(f"語音生成失敗: {e}")
         return None
 
 def generate_diff(user_text, target_text):
@@ -106,10 +100,8 @@ def generate_diff(user_text, target_text):
     return "".join(html)
 
 def transcribe_audio_bytes(audio_bytes):
-    """將 Bytes 資料轉成文字"""
     r = sr.Recognizer()
     try:
-        # mic_recorder 回傳的是 wav 格式的 bytes，可以直接讀取
         with sr.AudioFile(BytesIO(audio_bytes)) as source:
             audio_data = r.record(source)
             text = r.recognize_google(audio_data, language='en-US')
@@ -175,6 +167,7 @@ def pick_new_question():
     
     full_s = re.sub(r'_+', target_item['answer'], target_item['sentence'])
     
+    # 預先生成題目音檔
     if mode == 'listening' or mode == 'speaking':
         st.session_state.q_audio_data = get_audio_bytes(full_s)
     elif mode == 'choice':
@@ -300,12 +293,20 @@ with col1:
 with col2:
     if mode == 'choice':
         st.subheader("請聽發音，選出正確意思：")
-        st.audio(st.session_state.q_audio_data, format='audio/mp3')
+        if st.session_state.q_audio_data:
+            st.audio(st.session_state.q_audio_data, format='audio/mp3', autoplay=False)
+        else:
+            st.warning("⚠️ 音檔生成失敗")
+            
     elif mode == 'listening':
         st.subheader("請聽完整句子，填入空格：")
-        st.audio(st.session_state.q_audio_data, format='audio/mp3')
+        if st.session_state.q_audio_data:
+            st.audio(st.session_state.q_audio_data, format='audio/mp3', autoplay=False)
+        else:
+            st.warning("⚠️ 音檔生成失敗")
         clean_s = re.sub(r'_+', ' ______ ', q['sentence'])
         st.markdown(f"**{clean_s}**")
+        
     elif mode == 'speaking':
         full_display = re.sub(r'_+', q['answer'], q['sentence'])
         st.subheader("請大聲唸出以下句子：")
@@ -342,13 +343,10 @@ if mode == 'choice':
         )
 
 elif mode == 'speaking':
-    # [修改] 改用 streamlit_mic_recorder
-    # 這是一個純前端的錄音組件
     if not has_answered:
         col_rec, col_msg = st.columns([1, 3])
         with col_rec:
-            # key='my_recorder' 會自動存入 session_state
-            # 錄音完畢後，audio_blob 會包含 'bytes' 數據
+            # 錄音
             audio_blob = mic_recorder(
                 start_prompt="🎙️ 開始錄音", 
                 stop_prompt="⏹️ 停止並送出", 
@@ -359,7 +357,6 @@ elif mode == 'speaking':
         with col_msg:
             if audio_blob:
                 st.write("🔄 正在辨識...")
-                # 取得二進位資料
                 audio_bytes = audio_blob['bytes']
                 text_result = transcribe_audio_bytes(audio_bytes)
                 
@@ -395,9 +392,9 @@ if st.session_state.feedback:
     
     if st.session_state.audio_data:
         st.write("🔊 標準發音 (Edge-TTS)：")
-        st.audio(st.session_state.audio_data, format='audio/mp3', start_time=0)
+        # 加上 autoplay=True 嘗試自動播放
+        st.audio(st.session_state.audio_data, format='audio/mp3', start_time=0, autoplay=True)
 
     st.markdown("---")
-    st.button("👉 下一題 (Next)", on_click=pick_new_question, type="primary")
-    st.markdown("---")
-    st.button("👉 下一題 (Next)", on_click=pick_new_question, type="primary")
+    # [Fix] 加上 key 避免 DuplicateElementId 錯誤
+    st.button("👉 下一題 (Next)", on_click=pick_new_question, type="primary", key="btn_next")
